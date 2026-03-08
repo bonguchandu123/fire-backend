@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+pyserial
+motor
+pymongo
+firebase-admin
+python-dotenv
+websockets
+pydantic
+requests
