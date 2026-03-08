@@ -341,3 +341,80 @@ async def remove_token(token: str):
     db = database.get_db()
     result = await db["fcm_tokens"].delete_one({"token": token})
     return {"deleted": result.deleted_count}
+
+# ─────────────────────────────────────────
+# ROUTES — SERIAL DATA (from PC forwarder)
+# ─────────────────────────────────────────
+class SerialDataRequest(BaseModel):
+    status:     str
+    angle:      int
+    relay:      bool = False
+    buzzer:     bool = False
+    fire_angle: int  = None
+
+@app.post("/serial/data", tags=["Serial Data"])
+async def receive_serial_data(request: SerialDataRequest):
+    now = datetime.utcnow().isoformat()
+
+    prev_status = arduino.latest_status["status"]
+
+    arduino.latest_status.update({
+        "status":     request.status,
+        "angle":      request.angle,
+        "relay":      request.relay,
+        "buzzer":     request.buzzer,
+        "fire_angle": request.fire_angle,
+        "timestamp":  now,
+    })
+
+    await ws_manager.broadcast(arduino.latest_status)
+
+    if request.status == "FIRE" and prev_status != "FIRE":
+        db = database.get_db()
+
+        await db["fire_events"].insert_one({
+            "status":     "FIRE",
+            "angle":      request.angle,
+            "fire_angle": request.fire_angle or request.angle,
+            "relay":      True,
+            "buzzer":     True,
+            "timestamp":  now,
+        })
+
+        await db["fire_alerts"].insert_one({
+            "title":      "🔥 Fire Detected!",
+            "body":       f"Fire at angle {request.angle}°. Pump activated.",
+            "angle":      request.angle,
+            "fire_angle": request.fire_angle or request.angle,
+            "relay":      True,
+            "buzzer":     True,
+            "unread":     True,
+            "timestamp":  now,
+        })
+
+        await db["system_log"].insert_one({
+            "from_status": "SCANNING",
+            "to_status":   "FIRE",
+            "angle":       request.angle,
+            "timestamp":   now,
+        })
+
+        tokens_cursor = db["fcm_tokens"].find({}, {"token": 1})
+        tokens = [doc["token"] async for doc in tokens_cursor]
+        firebase.send_fire_notification(tokens, request.angle, now)
+        print(f"🔥 Fire received from PC at angle {request.angle}°")
+
+    elif request.status == "SCANNING" and prev_status == "FIRE":
+        db = database.get_db()
+        await db["system_log"].insert_one({
+            "from_status": "FIRE",
+            "to_status":   "SCANNING",
+            "angle":       request.angle,
+            "timestamp":   now,
+        })
+        tokens_cursor = db["fcm_tokens"].find({}, {"token": 1})
+        tokens = [doc["token"] async for doc in tokens_cursor]
+        firebase.send_safe_notification(tokens)
+        print("✅ Fire cleared — back to scanning")
+
+    return {"message": "Data received", "status": request.status}
