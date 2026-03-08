@@ -33,45 +33,56 @@ def parse_line(line: str):
 
     now = datetime.utcnow().isoformat()
 
-    if "FIRE DETECTED" in line:
-        latest_status = {
+    # ✅ FIX: Parse "Angle: 45" to get real servo angle (0–180°)
+    if line.startswith("Angle:"):
+        try:
+            val = int(line.split("Angle:")[-1].strip())
+            latest_status["angle"]     = val
+            latest_status["timestamp"] = now
+        except ValueError:
+            pass
+        # Don't broadcast yet — wait for status line
+        return
+
+    # ✅ FIX: Ignore raw sensor value (0 or 1) — it is NOT the angle
+    elif line.startswith("Sensor:"):
+        # Just ignore this line; angle is handled above
+        return
+
+    elif "FIRE DETECTED" in line:
+        latest_status.update({
             "status":     "FIRE",
-            "angle":      latest_status["angle"],
             "relay":      True,
             "buzzer":     True,
             "fire_angle": latest_status["angle"],
             "timestamp":  now,
-        }
-        # Trigger fire callback only on transition
+        })
+        # Trigger fire callback only on transition SCANNING → FIRE
         if _previous_status != "FIRE" and on_fire_detected:
-            on_fire_detected(latest_status)
+            on_fire_detected(dict(latest_status))
         _previous_status = "FIRE"
 
     elif "Scanning" in line:
-        latest_status = {
+        latest_status.update({
             "status":     "SCANNING",
-            "angle":      latest_status["angle"],
             "relay":      False,
             "buzzer":     False,
             "fire_angle": None,
             "timestamp":  now,
-        }
-        # Trigger cleared callback only on transition
+        })
+        # Trigger cleared callback only on transition FIRE → SCANNING
         if _previous_status == "FIRE" and on_fire_cleared:
             on_fire_cleared()
         _previous_status = "SCANNING"
 
-    elif "Sensor:" in line:
-        try:
-            # Extract raw sensor value (0 or 1)
-            val = int(line.split("Sensor:")[-1].strip())
-            latest_status["angle"] = val
-        except:
-            pass
+    else:
+        # Unknown line — skip broadcast
+        return
 
-    # Always trigger data update
+    # Broadcast updated status to WebSocket clients
     if on_data_update:
-        on_data_update(latest_status)
+        on_data_update(dict(latest_status))
+
 
 # ─────────────────────────────────────────
 # START ARDUINO READER THREAD
@@ -98,8 +109,9 @@ def start_arduino_reader():
             print("⚠️  Running in simulation mode")
             _simulate()
 
-    thread        = threading.Thread(target=_read, daemon=True)
+    thread = threading.Thread(target=_read, daemon=True)
     thread.start()
+
 
 # ─────────────────────────────────────────
 # SIMULATION MODE (if no Arduino connected)
@@ -109,24 +121,36 @@ def _simulate():
     print("🔄 Simulation mode started")
     angle     = 0
     direction = 3
+
     while True:
         angle += direction
         if angle >= 180 or angle <= 0:
             direction = -direction
 
-        latest_status["angle"]  = angle
-        latest_status["status"] = "SCANNING"
+        now = datetime.utcnow().isoformat()
 
-        # Simulate fire every 30 seconds
+        latest_status.update({
+            "angle":      angle,
+            "status":     "SCANNING",
+            "relay":      False,
+            "buzzer":     False,
+            "fire_angle": None,
+            "timestamp":  now,
+        })
+
+        # Simulate fire occasionally at angle 90
         if angle == 90 and random.random() < 0.1:
-            latest_status["status"]     = "FIRE"
-            latest_status["fire_angle"] = angle
-            latest_status["relay"]      = True
-            latest_status["buzzer"]     = True
+            latest_status.update({
+                "status":     "FIRE",
+                "fire_angle": angle,
+                "relay":      True,
+                "buzzer":     True,
+                "timestamp":  now,
+            })
             if on_fire_detected:
-                on_fire_detected(latest_status)
+                on_fire_detected(dict(latest_status))
 
         if on_data_update:
-            on_data_update(latest_status)
+            on_data_update(dict(latest_status))
 
         time.sleep(0.05)
