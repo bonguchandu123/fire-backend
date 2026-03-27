@@ -418,3 +418,53 @@ async def receive_serial_data(request: SerialDataRequest):
         print("✅ Fire cleared — back to scanning")
 
     return {"message": "Data received", "status": request.status}
+
+# ─────────────────────────────────────────
+# ROUTES — SYSTEM POWER SWITCH
+# ─────────────────────────────────────────
+class PowerRequest(BaseModel):
+    power: bool
+
+@app.post("/system/power", tags=["System Power"])
+async def set_system_power(request: PowerRequest):
+    command = "ON" if request.power else "OFF"
+    arduino.send_command(command)
+    arduino.latest_status["system_on"] = request.power
+    if not request.power:
+        arduino.latest_status["status"] = "OFF"
+        arduino.latest_status["relay"]  = False
+        arduino.latest_status["buzzer"] = False
+    else:
+        arduino.latest_status["status"] = "SCANNING"
+    await ws_manager.broadcast(arduino.latest_status)
+    return {"power": request.power}
+
+@app.get("/system/power", tags=["System Power"])
+async def get_system_power():
+    return {"power": arduino.latest_status.get("system_on", True)}
+
+# ─────────────────────────────────────────
+# ROUTES — POWER SWITCH
+# ─────────────────────────────────────────
+_system_power = {"on": True}
+
+@app.get("/power", tags=["Power"])
+async def get_power():
+    return {"power": "ON" if _system_power["on"] else "OFF"}
+
+@app.post("/power/on", tags=["Power"])
+async def power_on():
+    _system_power["on"] = True
+    arduino.latest_status["power"] = True
+    await ws_manager.broadcast({**arduino.latest_status, "power": True})
+    return {"power": "ON"}
+
+@app.post("/power/off", tags=["Power"])
+async def power_off():
+    _system_power["on"] = False
+    arduino.latest_status["power"] = False
+    arduino.latest_status["status"] = "OFF"
+    arduino.latest_status["relay"]  = False
+    arduino.latest_status["buzzer"] = False
+    await ws_manager.broadcast({**arduino.latest_status, "power": False})
+    return {"power": "OFF"}
