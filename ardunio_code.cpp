@@ -15,6 +15,7 @@ int  angle     = 0;
 int  scanSpeed = 3;
 int  fireAngle = 0;
 bool systemOn  = true;
+//
 
 void setup() {
   Serial.begin(9600);
