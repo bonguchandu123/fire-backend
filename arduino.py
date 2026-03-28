@@ -15,6 +15,7 @@ latest_status = {
     "buzzer":     False,
     "fire_angle": None,
     "timestamp":  None,
+    "power":      True,
 }
 
 on_fire_detected = None
@@ -22,6 +23,19 @@ on_fire_cleared  = None
 on_data_update   = None
 
 _previous_status = "SCANNING"
+_ser             = None   # ✅ global serial for send_command
+
+def send_command(cmd: str):
+    """Send command to Arduino e.g. POWER_ON / POWER_OFF"""
+    global _ser
+    if _ser and _ser.is_open:
+        try:
+            _ser.write(f"{cmd}\n".encode())
+            print(f"📤 Command sent to Arduino: {cmd}")
+        except Exception as e:
+            print(f"⚠️ Command send error: {e}")
+    else:
+        print(f"⚠️ Serial not open — cannot send: {cmd}")
 
 def parse_line(line: str):
     global latest_status, _previous_status
@@ -38,6 +52,12 @@ def parse_line(line: str):
         return
 
     elif line.startswith("Sensor:"):
+        return
+
+    elif line.startswith("STATUS:"):
+        status_val = line.split("STATUS:")[-1].strip()
+        latest_status["power"] = (status_val == "ON")
+        print(f"🔌 Arduino power: {status_val}")
         return
 
     elif "FIRE DETECTED" in line:
@@ -81,16 +101,18 @@ def parse_line(line: str):
 
 
 def start_arduino_reader():
+    global _ser
     port      = os.getenv("ARDUINO_PORT", "COM5")
     baud_rate = int(os.getenv("BAUD_RATE", 9600))
 
     def _read():
+        global _ser
         try:
-            ser = serial.Serial(port, baud_rate, timeout=1)
+            _ser = serial.Serial(port, baud_rate, timeout=1)
             print(f"✅ Arduino connected on {port}")
             while True:
                 try:
-                    raw  = ser.readline()
+                    raw  = _ser.readline()
                     line = raw.decode("utf-8", errors="ignore").strip()
                     if line:
                         print(f"📡 Arduino: {line}")
