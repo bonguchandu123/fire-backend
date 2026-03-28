@@ -1,14 +1,13 @@
 import serial
 import threading
+import time
+import random
 from datetime import datetime
 from dotenv import load_dotenv
 import os
 
 load_dotenv()
 
-# ─────────────────────────────────────────
-# SHARED STATE
-# ─────────────────────────────────────────
 latest_status = {
     "status":     "SCANNING",
     "angle":      90,
@@ -18,22 +17,17 @@ latest_status = {
     "timestamp":  None,
 }
 
-# Callbacks set by main.py
-on_fire_detected = None   # called when fire starts
-on_fire_cleared  = None   # called when fire stops
-on_data_update   = None   # called on every update
+on_fire_detected = None
+on_fire_cleared  = None
+on_data_update   = None
 
 _previous_status = "SCANNING"
 
-# ─────────────────────────────────────────
-# PARSE ARDUINO LINE
-# ─────────────────────────────────────────
 def parse_line(line: str):
     global latest_status, _previous_status
 
     now = datetime.utcnow().isoformat()
 
-    # ✅ FIX: Parse "Angle: 45" to get real servo angle (0–180°)
     if line.startswith("Angle:"):
         try:
             val = int(line.split("Angle:")[-1].strip())
@@ -41,12 +35,9 @@ def parse_line(line: str):
             latest_status["timestamp"] = now
         except ValueError:
             pass
-        # Don't broadcast yet — wait for status line
         return
 
-    # ✅ FIX: Ignore raw sensor value (0 or 1) — it is NOT the angle
     elif line.startswith("Sensor:"):
-        # Just ignore this line; angle is handled above
         return
 
     elif "FIRE DETECTED" in line:
@@ -57,9 +48,11 @@ def parse_line(line: str):
             "fire_angle": latest_status["angle"],
             "timestamp":  now,
         })
-        # Trigger fire callback only on transition SCANNING → FIRE
         if _previous_status != "FIRE" and on_fire_detected:
-            on_fire_detected(dict(latest_status))
+            try:
+                on_fire_detected(dict(latest_status))
+            except Exception as e:
+                print(f"⚠️ on_fire_detected error: {e}")
         _previous_status = "FIRE"
 
     elif "Scanning" in line:
@@ -70,25 +63,25 @@ def parse_line(line: str):
             "fire_angle": None,
             "timestamp":  now,
         })
-        # Trigger cleared callback only on transition FIRE → SCANNING
         if _previous_status == "FIRE" and on_fire_cleared:
-            on_fire_cleared()
+            try:
+                on_fire_cleared()
+            except Exception as e:
+                print(f"⚠️ on_fire_cleared error: {e}")
         _previous_status = "SCANNING"
 
     else:
-        # Unknown line — skip broadcast
         return
 
-    # Broadcast updated status to WebSocket clients
     if on_data_update:
-        on_data_update(dict(latest_status))
+        try:
+            on_data_update(dict(latest_status))
+        except Exception as e:
+            print(f"⚠️ on_data_update error: {e}")
 
 
-# ─────────────────────────────────────────
-# START ARDUINO READER THREAD
-# ─────────────────────────────────────────
 def start_arduino_reader():
-    port      = os.getenv("ARDUINO_PORT", "COM3")
+    port      = os.getenv("ARDUINO_PORT", "COM5")
     baud_rate = int(os.getenv("BAUD_RATE", 9600))
 
     def _read():
@@ -103,54 +96,61 @@ def start_arduino_reader():
                         print(f"📡 Arduino: {line}")
                         parse_line(line)
                 except Exception as e:
-                    print(f"⚠️  Read error: {e}")
+                    print(f"⚠️ Read error: {e}")
+                    time.sleep(1)
         except Exception as e:
             print(f"❌ Cannot connect to Arduino on {port}: {e}")
-            print("⚠️  Running in simulation mode")
+            print("⚠️ Running in simulation mode")
             _simulate()
 
     thread = threading.Thread(target=_read, daemon=True)
     thread.start()
 
 
-# ─────────────────────────────────────────
-# SIMULATION MODE (if no Arduino connected)
-# ─────────────────────────────────────────
 def _simulate():
-    import time, random
     print("🔄 Simulation mode started")
     angle     = 0
     direction = 3
 
     while True:
-        angle += direction
-        if angle >= 180 or angle <= 0:
-            direction = -direction
+        try:
+            angle += direction
+            if angle >= 180 or angle <= 0:
+                direction = -direction
 
-        now = datetime.utcnow().isoformat()
+            now = datetime.utcnow().isoformat()
 
-        latest_status.update({
-            "angle":      angle,
-            "status":     "SCANNING",
-            "relay":      False,
-            "buzzer":     False,
-            "fire_angle": None,
-            "timestamp":  now,
-        })
-
-        # Simulate fire occasionally at angle 90
-        if angle == 90 and random.random() < 0.1:
             latest_status.update({
-                "status":     "FIRE",
-                "fire_angle": angle,
-                "relay":      True,
-                "buzzer":     True,
+                "angle":      angle,
+                "status":     "SCANNING",
+                "relay":      False,
+                "buzzer":     False,
+                "fire_angle": None,
                 "timestamp":  now,
             })
-            if on_fire_detected:
-                on_fire_detected(dict(latest_status))
 
-        if on_data_update:
-            on_data_update(dict(latest_status))
+            if angle == 90 and random.random() < 0.1:
+                latest_status.update({
+                    "status":     "FIRE",
+                    "fire_angle": angle,
+                    "relay":      True,
+                    "buzzer":     True,
+                    "timestamp":  now,
+                })
+                if on_fire_detected:
+                    try:
+                        on_fire_detected(dict(latest_status))
+                    except Exception as e:
+                        print(f"⚠️ on_fire_detected error: {e}")
 
-        time.sleep(0.05)
+            if on_data_update:
+                try:
+                    on_data_update(dict(latest_status))
+                except Exception as e:
+                    print(f"⚠️ on_data_update error: {e}")
+
+            time.sleep(0.1)
+
+        except Exception as e:
+            print(f"⚠️ Simulation error: {e}")
+            time.sleep(1)
